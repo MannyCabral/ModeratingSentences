@@ -198,8 +198,12 @@ function signIn() {
     } else { // Process regular message
       var usr = getUserFromJSON(event.data);
       var msg = getJSON(event.data);
-      transcripts[usr] = msg;
-      assembleButtons(usr);
+      if (msg.isFinal) {
+        // TODO(Manny): Fill out final message behavior
+      } else {
+        transcripts[usr] = msg;
+        assembleButtons(usr);
+      }
     }
   }
 
