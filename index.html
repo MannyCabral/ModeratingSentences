@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+<body>
+
+<button type="button" id="signInButton" onclick="signIn();">Sign In</button>
+<button type="button" id="signOutButton" onclick="signOut();">Sign Out</button>
+
+<script>
+$('#signOutButton').hide();
+var DEST = "127.0.0.1"
+var PORT = "4444";
+var ws;
+
+var users = [];
+var transcripts = {};
+var usedWords= {};
+
+/*
+Returns parameters formatted into string for functions.
+Only takes in strings and numbers.
+
+Ex. ["foo", 5, "bar", 8]
+Returns: '"foo",5,"bar",8'
+*/
+function formatParams(params) {
+  var str = "";
+  for (var i = 0; i < params.length; i++) {
+    var type = typeof params[i];
+    if (type == 'string') {
+      str = str.concat('"'+params[i]+'"');
+    } else if (type == 'number') {
+      str = str.concat(params[i]);
+    } else {
+      console.log("Parameter is of incorrect type, not string or number:",type,params[i]);
+    }
+
+    if (i + 1 < params.length) {
+      str = str.concat(',');
+    }
+  }
+  return str;
+}
+
+/*
+Returns a HTML button with onclick function set to splice sentences.
+
+Ex. ["alice", 0, 2], "love"
+Returns: '<button type="button" onclick=\'spliceMsg("alice",0,2);\'>love</button>'
+*/
+function formatButton(params,msg) {
+  var paramStr = params.join();
+  return '<button type="button" onclick=\'spliceMsg('+formatParams(params)+');\'>'+msg+'</button>';
+}
+
+/*
+Ex. ["now", "let's", "get", "this", "thing"] --> "now let's get this thing"
+*/
+function arrayToString(arr) {
+  return arr.join().replace(/,/g," ");
+}
+
+/*
+Handles when the moderator has selected a sentence. It performs the following actions:
+*Clears user's other transcripts.
+*Records the chosen sentence.
+*Splices chosen transcript.
+*/
+function spliceMsg(name, transcriptNumber, wordNumber) {
+  $('#'+name).empty();
+
+  // Record sentence
+  var curMsg = transcripts[name][transcriptNumber].split(" ").slice(usedWords[name],usedWords[name]+wordNumber+1);
+  usedWords[name] += wordNumber + 1;
+
+  var leftover = transcripts[name][transcriptNumber].split(" ").slice(usedWords[name]);
+
+  // Reset buttons
+  for (var i = 0; i < leftover.length; i++) {
+    $('#'+name).append(formatButton([name,0,i],leftover[i]));
+  }
+
+  // Send sentence to server
+  console.log("ToServer",name + ": " + arrayToString(curMsg));
+  ws.send(name + ": " + arrayToString(curMsg));
+}
+
+/*
+Assembles the buttons for that specific user.
+*/
+function assembleButtons(name) {
+  $('#'+name).empty();
+
+  for (var j = 0; j < transcripts[name]["length"]; j++) { // Get all transcripts for this person.
+    var msg = transcripts[name][j].split(" ");
+
+    for (var k = 0; k < msg.length; k++) { // Display all words as buttons.
+      var params = [name,j,k];
+      var button = formatButton(params, msg[k]);
+      //console.log(button);
+      $('#'+name).append(button);
+    }
+    $('#'+name).append("<br><br>");
+  }
+}
+
+/*
+Returns username from new user or remove user messages.
+
+Examples:
+"~foo" --> "foo"
+"|bar" --> "bar"
+*/
+function getUser(msg) {
+  return msg.substr(1);
+}
+
+/*
+Returns username from transcript messages.
+
+Example:
+'bob: {"0":"the death scene uncensored","1":" school a","resultIndex":0,"length":2,"isFinal":false}' --> 'bob'
+*/
+function getUserFromJSON(msg) {
+  return msg.substr(0, msg.indexOf(":"));
+}
+
+/*
+Returns JSON from transcript messages.
+
+Example:
+'bob: {"0":"the death scene uncensored","1":" school a","resultIndex":0,"length":2,"isFinal":false}' -- > {"0":"the death scene uncensored","1":" school a","resultIndex":0,"length":2,"isFinal":false}
+*/
+function getJSON(msg) {
+  return JSON.parse(msg.substr(msg.indexOf(":")+2, msg.length));
+}
+
+/*
+Returns whether the transcript is final or not.
+
+Example:
+'bob: {"0":"the death scene uncensored","1":" school a","resultIndex":0,"length":2,"isFinal":false}' --> false
+'bob: {"0":"the death scene uncensored","1":" school a","resultIndex":0,"length":2,"isFinal":true}' --> true
+*/
+function isFinal(json) {
+  return getJSON(json).isFinal;
+}
+
+/*
+Formats username into ID for master div.
+
+There are two divs:
+1) A div that contains all the information for one user.
+2) A div for each user that contains only the transcripts. This one is contained in the first one.
+
+By doing this, it becomes easy to remove one user.
+*/
+function masterDiv(usr) {
+  return usr.concat("Master");
+}
+
+function addNewUser(name) {
+  users.push(name);
+  usedWords[name] = 0;
+  $('#sentenceSplicer').append('<div id="'+masterDiv(name)+'">'+name+'<br><br><div id="'+name+'"></div></div>');
+}
+
+function removeUser(usr) {
+  users.splice(users.indexOf(usr),1);
+  document.getElementById(masterDiv(usr)).remove();
+  if (usr in transcripts) {
+    delete transcripts[usr];
+  }
+  if (usr in usedWords) {
+    delete usedWords[usr];
+  }
+}
+
+function signIn() {
+  ws = new WebSocket("ws://"+DEST+":"+PORT+"/");
+
+  ws.onopen = function(event) {
+    ws.send("#mod");
+    $('#signOutButton').show();
+  }
+
+  ws.onmessage = function (event) {
+    console.log(event.data);
+    if (event.data.includes("new connection: /") || event.data.includes("^")) { // guard for automated, useless message
+    } else if (event.data.startsWith('|')) { // New user connected
+      var usr = getUser(event.data);
+      console.log("New user connected:",usr);
+      addNewUser(usr);
+    } else if (event.data.startsWith('~')) { // User disconnected
+      var usr = getUser(event.data);
+      console.log("User left:",usr);
+      removeUser(usr);
+    } else { // Process regular message
+      var usr = getUserFromJSON(event.data);
+      var msg = getJSON(event.data);
+      transcripts[usr] = msg;
+      assembleButtons(usr);
+    }
+  }
+
+//  addNewUser("bob");
+//  var fake1 =  'bob: {"0":"the death scene uncensored","1":" school a","resultIndex":0,"length":2,"isFinal":false}';
+//  var usr = getUserFromJSON(fake1);
+//  var msg = getJSON(fake1);
+//  transcripts[usr] = msg;
+
+//  var fake2 = 'alice: {"0":"sometimes we love","1":" cool I like","resultIndex":0,"length":2,"isFinal":false}';
+//  console.log("TRANSCRIPTS",transcripts);
+//  assembleButtons(usr);
+
+  $('#signInButton').hide();
+}
+
+function signOut() {
+  ws.close();
+  $('#sentenceSplicer').empty();
+
+  $('#signInButton').show();
+  $('#signOutButton').hide();
+}
+
+//$(document).ready(assembleButtons)
+
+</script>
+
+<div id="sentenceSplicer"></div>
+
+</br>
+
+</body>
+</html>
